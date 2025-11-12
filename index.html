@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>숫자 읽어주기 TTS 앱</title>
+    <!-- Tailwind CSS 로딩 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tone.js 로딩 (음악 생성용) -->
+    <script src="https://unpkg.com/tone@14.9.11/build/Tone.js"></script> 
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Jua&display=swap');
+        
+        body {
+            font-family: 'Jua', sans-serif;
+            background-color: #f0f4f8; /* Light blue background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .sound-container {
+            max-width: 500px;
+            width: 100%;
+            background-color: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .action-button {
+            width: 100%;
+            padding: 15px 30px;
+            margin-top: 20px;
+            border-radius: 8px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s;
+            background-color: #2563eb; /* Blue */
+            box-shadow: 0 4px #1e40af;
+        }
+        
+        .action-button:hover {
+            background-color: #1e40af;
+        }
+        
+        .action-button:active {
+            transform: translateY(2px);
+            box-shadow: 0 0 #1e40af !important;
+        }
+        
+        .input-field {
+            width: 100%;
+            padding: 10px;
+            font-size: 1.5rem;
+            text-align: center;
+            border: 2px solid #93c5fd;
+            border-radius: 8px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        
+        .input-field:focus {
+            border-color: #2563eb;
+        }
+        
+        .error-message {
+            color: #ef4444; /* Red */
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="sound-container">
+        <h1 class="text-3xl font-bold mb-4 text-gray-800">🗣️ 숫자 읽어주기 앱 🎵</h1>
+        
+        <p class="text-gray-600 mb-2">
+            숫자를 입력하고 버튼을 클릭하면, 각 자릿수를 영어로 읽어줍니다.
+        </p>
+        <p class="text-xs text-pink-600 font-bold mb-4">
+            * 🤫 67을 입력해보세요!
+        </p>
+        
+        <!-- value="67"을 제거하여 초기값 없이 시작하도록 변경 -->
+        <input type="number" id="number-input" class="input-field" value="" placeholder="여기에 숫자를 입력하세요">
+        
+        <button id="read-btn" class="action-button" onclick="readNumber()">
+            📢 숫자 발음 듣기
+        </button>
+        
+        <p id="reading-display" class="mt-4 text-xl text-gray-700 font-bold h-6"></p>
+
+    </div>
+
+    <script>
+        // 1. 숫자를 영어 단어로 매핑 (TTS용)
+        const digitMap = {
+            '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+            '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
+        };
+
+        let currentDisplaySequence = []; // 현재 화면에 표시되는 단어 시퀀스
+        const synth = window.speechSynthesis; // TTS Synth
+
+        let isPhonkPlaying = false; // 퐁크 재생 상태 추적
+        let rapScheduleId = null; // 랩 멜로디 Part 추적용 (정지용)
+        const bpm = 150; // Phonk 템포
+
+        // ==========================================================
+        // Tone.js (Phonk Music) 설정
+        // ==========================================================
+
+        // 킥 드럼 (Membrane Synth)
+        const kick = new Tone.MembraneSynth({
+            volume: -2, 
+            octaves: 4,
+            pitchDecay: 0.05
+        }).toDestination();
+
+        // 닫힌 하이햇 (Closed Hihat - Noise Synth - 퐁크의 특징적인 빠르고 거친 소리)
+        const hihat = new Tone.NoiseSynth({
+            volume: -10,
+            noise: { type: 'white' },
+            envelope: { attack: 0.001, decay: 0.05, sustain: 0.005 }
+        }).toDestination();
+
+        // 오픈 하이햇 (Open Hihat - 긴 Release를 가진 하이햇)
+        const openHihat = new Tone.NoiseSynth({
+            volume: -10,
+            noise: { type: 'white' },
+            envelope: { attack: 0.01, decay: 0.1, sustain: 0.3, release: 0.5 }
+        }).toDestination();
+
+
+        // 베이스 (MonoSynth - 깊은 서브 베이스)
+        const bass = new Tone.MonoSynth({
+            volume: -12,
+            oscillator: { type: 'square' },
+            envelope: { attack: 0.01, decay: 0.5, sustain: 0.2, release: 0.5 },
+            filterEnvelope: { octaves: 4 }
+        }).toDestination();
+        
+        // 새로운 기타/신스 멜로디 (Phonk 멜로디)
+        const melodySynth = new Tone.MonoSynth({
+            volume: -15, // 배경 멜로디이므로 볼륨을 낮춥니다
+            oscillator: { type: 'sawtooth' }, // 톱니파로 날카로운 소리
+            envelope: {
+                attack: 0.01,
+                decay: 0.2,
+                sustain: 0.5,
+                release: 0.8
+            },
+            filterEnvelope: {
+                attack: 0.001,
+                decay: 0.7,
+                sustain: 0.1,
+                release: 0.5,
+                baseFrequency: 300, // 어두운 느낌을 위해 낮은 필터 주파수 설정
+                octaves: 4, // 필터가 올라가는 옥타브 수
+                exponent: 2
+            }
+        }).toDestination();
+        
+        // 새로운 랩 보컬 신스 (Square wave로 로보틱한 보컬 텍스처)
+        const rapSynth = new Tone.Synth({
+            volume: -8, 
+            oscillator: { type: 'square' }, 
+            envelope: { attack: 0.05, decay: 0.1, sustain: 0.5, release: 0.2 }
+        }).toDestination();
+
+        let melodyPart = null; // 멜로디 파트 객체
+
+        /**
+         * 퐁크 비트 재생을 중단합니다.
+         */
+        function stopPhonkBeat() {
+            if (isPhonkPlaying) {
+                // Tone.js 트랜스포트 중지 및 클리어
+                Tone.Transport.stop();
+                Tone.Transport.cancel();
+                
+                // 랩 멜로디 Part 중지 및 정리
+                if (rapScheduleId !== null) {
+                    rapScheduleId.stop();
+                    rapScheduleId.dispose();
+                    rapScheduleId = null;
+                }
+                
+                // 멜로디 파트 중지 및 정리
+                if (melodyPart) {
+                    melodyPart.stop();
+                    melodyPart.dispose();
+                    melodyPart = null;
+                }
+
+                // TTS 중단 (일반 숫자 읽기 중일 경우 대비)
+                synth.cancel();
+
+                isPhonkPlaying = false;
+                document.getElementById('reading-display').textContent = "퐁크 음악 중단.";
+                document.getElementById('read-btn').textContent = "📢 숫자 발음 듣기";
+            }
+        }
+
+        /**
+         * 퐁크 비트와 랩을 재생합니다.
+         */
+        function playPhonkBeat() {
+            stopPhonkBeat(); // 혹시 재생 중인 TTS나 Phonk이 있다면 중단
+            
+            isPhonkPlaying = true;
+            document.getElementById('read-btn').textContent = "⏹️ 폰크 음악 끄기";
+            document.getElementById('reading-display').textContent = "🎤 이스터에그 발동! 멜로디 랩 (단어 포함) 재생 중!";
+
+            // 오디오 컨텍스트 활성화 및 비트 시작
+            Tone.start().then(() => {
+                Tone.Transport.bpm.value = bpm;
+                
+                // 킥 패턴 (4/4 박자에 강한 킥)
+                new Tone.Loop(time => {
+                    kick.triggerAttackRelease("C1", "8n", time); 
+                }, "4n").start(0);
+
+                // 닫힌 하이햇 패턴 (16분 음표의 빠른 리듬 - 8분음표의 엇박에 재생)
+                new Tone.Loop(time => {
+                    hihat.triggerAttackRelease("16n", time); 
+                }, "8n").start("8n"); 
+                
+                // 오픈 하이햇 패턴 (4번째 박자에 강조)
+                new Tone.Loop(time => {
+                    openHihat.triggerAttackRelease("8n", time + Tone.Transport.toSeconds("0:3")); 
+                }, "1m").start(0); 
+
+                // 베이스라인 (간단한 베이스 리듬)
+                const bassNotes = ["C2", "G1", "Eb2", "C2"];
+                let bassIndex = 0;
+                new Tone.Loop(time => {
+                    bass.triggerAttackRelease(bassNotes[bassIndex % bassNotes.length], "4n", time);
+                    bassIndex++;
+                }, "4n").start(0);
+                
+                // 멜로디 파트 (2마디 루프의 간단한 멜로디)
+                melodyPart = new Tone.Part((time, note) => {
+                    melodySynth.triggerAttackRelease(note.note, note.duration, time);
+                }, [
+                    // 마디 1 (C 마이너 코드 느낌)
+                    { time: "0:0:0", note: "C3", duration: "4n" }, 
+                    { time: "0:2:0", note: "Eb3", duration: "4n" }, 
+                    // 마디 2 (G 마이너 코드 느낌으로 전환)
+                    { time: "1:0:0", note: "G2", duration: "4n" }, 
+                    { time: "1:2:0", note: "Bb2", duration: "4n" }, 
+                ]);
+                
+                melodyPart.loop = true;
+                melodyPart.loopEnd = "2m"; // 2마디 후 반복
+                melodyPart.start(0); // 트랜스포트 시작과 동시에 시작
+                
+                // 랩 멜로디 & TTS 시퀀스: "Six" (C4)와 "Seven" (Eb4)에 멜로디와 단어 동시 부여
+                const rapSequence = [
+                    // Bar 1: "Six" on the 1st beat
+                    { time: "0:0:0", note: "C4", duration: "4n", word: "six" }, 
+                    
+                    // Bar 2: "Seven" on the 3rd beat
+                    { time: "1:2:0", note: "Eb4", duration: "8n", word: "seven" }, 
+                ];
+
+                rapScheduleId = new Tone.Part((time, noteData) => {
+                    // 1. 신디사이저로 멜로디 노트 재생
+                    rapSynth.triggerAttackRelease(noteData.note, noteData.duration, time);
+                    
+                    // 2. TTS로 단어 발음
+                    // 랩 음성을 위해 TTS 속도를 약간 빠르게 설정
+                    const utterance = new SpeechSynthesisUtterance(noteData.word);
+                    utterance.lang = 'en-US';
+                    utterance.rate = 1.2; // 랩 느낌을 위해 속도 조정
+                    
+                    // TTS는 비동기이므로 Tone.js의 정확한 시간에 맞춰 시작하는 데 한계가 있습니다.
+                    synth.speak(utterance); 
+
+                }, rapSequence);
+
+                rapScheduleId.loop = true;
+                rapScheduleId.loopEnd = "2m"; // 2마디 후 반복
+                rapScheduleId.start(0); 
+
+                Tone.Transport.start();
+
+            }).catch(e => {
+                document.getElementById('reading-display').textContent = "⚠️ 오디오 시작 실패. (브라우저 정책 확인)";
+                stopPhonkBeat();
+            });
+        }
+        
+        // ==========================================================
+        // TTS (Text-to-Speech) 설정
+        // ==========================================================
+
+        /**
+         * 한 자릿수 숫자를 발음하고, 발음이 끝나면 콜백 함수를 호출합니다.
+         */
+        function readDigit(digit, callback) {
+            const word = digitMap[digit];
+            const displayElement = document.getElementById('reading-display');
+
+            if (!word) {
+                if (callback) callback();
+                return;
+            }
+
+            const utterance = new SpeechSynthesisUtterance(word);
+            utterance.lang = 'en-US'; 
+            utterance.rate = 1.0; 
+            utterance.pitch = 1.0; 
+            
+            // 화면에 현재 발음되는 단어 표시
+            currentDisplaySequence.push(word.toUpperCase());
+            displayElement.textContent = currentDisplaySequence.join(' - ');
+
+            // 발음이 끝나면 다음 단어를 재생하도록 콜백 설정
+            utterance.onend = function() {
+                if (callback) callback();
+            };
+            
+            window.speechSynthesis.speak(utterance);
+        }
+
+        /**
+         * 큐에 있는 다음 단어를 발음합니다.
+         */
+        function speakNext(queue) {
+            const displayElement = document.getElementById('reading-display');
+            
+            if (queue.length === 0) {
+                displayElement.textContent = "재생 완료!";
+                return;
+            }
+
+            const nextDigit = queue.shift();
+            
+            // 현재 숫자를 발음하고, 발음이 끝나면 재귀적으로 speakNext를 호출하여 다음 숫자를 처리
+            readDigit(nextDigit, () => speakNext(queue));
+        }
+
+
+        /**
+         * 숫자 읽기 및 재생 메인 함수 (조건부 로직)
+         */
+        function readNumber() {
+            const inputElement = document.getElementById('number-input');
+            const displayElement = document.getElementById('reading-display');
+            const numberString = String(inputElement.value).trim();
+            
+            // 폰크 재생 중이면 중지하고 종료
+            if (isPhonkPlaying) {
+                stopPhonkBeat();
+                return;
+            }
+            
+            // TTS 중단 (퐁크 비트가 아닌 일반 발음 재생 중일 경우를 대비)
+            synth.cancel();
+
+            if (!numberString) {
+                displayElement.textContent = "숫자를 입력해주세요!";
+                displayElement.classList.remove('error-message');
+                return;
+            }
+
+            // 조건 1: 67 입력 시 이스터에그(퐁크 비트 + 멜로디 랩) 재생
+            if (numberString === '67') {
+                displayElement.classList.remove('error-message');
+                playPhonkBeat();
+                return;
+            }
+            
+            // 조건 2: 67 외의 숫자 입력 시 TTS 재생 (기존 로직)
+            
+            if (!synth) {
+                displayElement.classList.add('error-message');
+                displayElement.textContent = "⚠️ 죄송해요, 이 브라우저는 음성 합성을 지원하지 않아요.";
+                return;
+            }
+            
+            // 디스플레이 초기화
+            currentDisplaySequence = [];
+            displayElement.textContent = "";
+            displayElement.classList.remove('error-message');
+
+            const digitQueue = Array.from(numberString);
+            
+            speakNext(digitQueue);
+        }
+
+    </script>
+</body>
+</html>
